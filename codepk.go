@@ -6,27 +6,45 @@ import (
 	"time"
 )
 
-const COUNT = 100000000
-const MAX_WIN = 2
-const READ_THREADS = 2
+const (
+	COUNT         = 10000000
+	READ_THREADS  = 10
+	WRITE_THREADS = 10
+)
 
-var failed int = 0
-var now int64
-var wg sync.WaitGroup
-
-func pop(q chan int64) {
-	for ts := range q {
-		wg.Done()
-		if (now - ts) > MAX_WIN {
-			failed++
-		}
-	}
+type IQueue interface {
+	push(int64)
+	pop() int64
+	stop()
 }
 
-func main() {
-	q := make(chan int64)
-	now = time.Now().Unix()
-	wg.Add(COUNT)
+// internal channel queue
+
+type ChannelQueue struct {
+	queue chan int64
+}
+
+func NewChannelQueue() *ChannelQueue {
+	q := new(ChannelQueue)
+	q.queue = make(chan int64)
+
+	return q
+}
+
+func (self *ChannelQueue) push(val int64) {
+	self.queue <- val
+}
+
+func (self *ChannelQueue) pop() int64 {
+	return <-self.queue
+}
+
+func (self *ChannelQueue) stop() {
+	close(self.queue)
+}
+
+func runTest(q IQueue) {
+	now := time.Now().Unix()
 
 	ticket := time.Tick(1 * time.Second)
 	go func() {
@@ -36,14 +54,34 @@ func main() {
 	}()
 
 	for i := 0; i < READ_THREADS; i++ {
-		go pop(q)
+		go func() {
+			for {
+				ts := q.pop()
+				if ts <= 0 {
+					break
+				}
+			}
+		}()
 	}
 
-	for i := 0; i < COUNT; i++ {
-		q <- now
+	writeWg := new(sync.WaitGroup)
+	writeWg.Add(WRITE_THREADS)
+	for i := 0; i < WRITE_THREADS; i++ {
+		go func() {
+			for j := 0; j < COUNT/WRITE_THREADS; j++ {
+				q.push(now)
+			}
+			writeWg.Done()
+		}()
 	}
-	close(q)
+	writeWg.Wait()
+	q.stop()
 
-	wg.Wait()
-	fmt.Println("Done.", "Failed:", failed)
+	fmt.Println("Done.")
+}
+
+func main() {
+	q := NewChannelQueue()
+
+	runTest(q)
 }
